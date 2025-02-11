@@ -23,6 +23,15 @@ export OPENAI_API_KEY_PROBOOK="yourkey"
 echo "export OPENAI_API_KEY_PROBOOK='yourkey'" >> ~/.zshrc
 ```
 
-### 4. Recovering from Selenium Errors
+### 4. Running the agent
+```
+python3 main.py
+```
 
-In case you encounter a selenum error, please exit the program and re-start it. 
+### 5. Recovering from Selenium errors
+
+In case you encounter a Selenium error, example:
+```
+ Error during search submission: Message: no such element: Unable to locate element: {"method":"css selector","selector":"[id="twotabsearchtextbox"]"}
+```
+please exit the program and re-start it. 

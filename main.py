@@ -148,7 +148,7 @@ class AmazonShoppingAssistant:
     def extract_products(self):
         """
         Finds product elements on the search results page and uses OpenAI to parse the entire HTML
-        snippet for each product to extract its details.
+        snippet for each product to extract its details. Also stores the Selenium element for later use.
         """
         products = []
         try:
@@ -162,6 +162,8 @@ class AmazonShoppingAssistant:
         for elem in product_elements[:10]:
             html = elem.get_attribute("outerHTML")
             product_details = self.parse_product_details_with_openai(html)
+            # Store the Selenium element for later clicking.
+            product_details["element"] = elem
             products.append(product_details)
         return products
 
@@ -245,16 +247,23 @@ class AmazonShoppingAssistant:
         top_products = [p for score, p in scored_products[:3]]
         return top_products
 
-    def fetch_product_page_details(self, url):
+    def fetch_product_page_details_by_click(self, element):
         """
-        Navigates to the given product page URL and uses OpenAI to extract detailed information.
+        Uses Selenium to click on the given product element, waits for the product page to load,
+        uses OpenAI to extract detailed information from the product page HTML,
+        and then navigates back to the search results.
         """
-        logging.info("Fetching detailed product page: %s", url)
-        self.driver.get(url)
-        time.sleep(3)  # Allow the page to load.
-        html = self.driver.page_source
-        details = self.parse_detailed_product_info_with_openai(html)
-        return details
+        try:
+            element.click()
+            time.sleep(3)  # Wait for the product page to load.
+            html = self.driver.page_source
+            details = self.parse_detailed_product_info_with_openai(html)
+            self.driver.back()
+            time.sleep(3)
+            return details
+        except Exception as e:
+            logging.error("Error fetching product page details by clicking: %s", e)
+            return {"detailed_description": "Details not available", "key_features": []}
 
     def parse_detailed_product_info_with_openai(self, html):
         """
@@ -319,9 +328,13 @@ class AmazonShoppingAssistant:
         Uses OpenAI to answer a follow-up question using detailed product page information.
         """
         context = (
-            f"Product details: Title: {product.get('title')}, Price: {product.get('price')}, "
-            f"Rating: {product.get('rating')}, Reviews: {product.get('reviews')}, Prime: {product.get('prime')}\n"
-            f"Detailed info: {json.dumps(details)}\n"
+            f"Product details:\n"
+            f"  Title   : {product.get('title')}\n"
+            f"  Price   : {product.get('price')}\n"
+            f"  Rating  : {product.get('rating')}\n"
+            f"  Reviews : {product.get('reviews')}\n"
+            f"  Prime   : {product.get('prime')}\n"
+            f"Detailed info: {json.dumps(details, indent=2)}\n"
             f"Question: {question}\n"
             "Answer the question based on the detailed product information."
         )
@@ -348,8 +361,12 @@ class AmazonShoppingAssistant:
         context = "Here are the product options:\n"
         for idx, product in enumerate(products, start=1):
             context += (
-                f"Option {idx}: Title: {product.get('title')}, Price: {product.get('price')}, "
-                f"Rating: {product.get('rating')}, Reviews: {product.get('reviews')}, Prime: {product.get('prime')}\n"
+                f"Option {idx}:\n"
+                f"  Title   : {product.get('title')}\n"
+                f"  Price   : {product.get('price')}\n"
+                f"  Rating  : {product.get('rating')}\n"
+                f"  Reviews : {product.get('reviews')}\n"
+                f"  Prime   : {product.get('prime')}\n\n"
             )
         prompt = (
             f"Based on the following product options:\n{context}\n"
@@ -375,12 +392,15 @@ class AmazonShoppingAssistant:
     def conversation_loop(self, products):
         """
         Engages in a Q&A conversation loop with the user.
-        For each follow-up question, it first uses OpenAI to decide if browsing to the product page will yield a better answer.
-        If yes and a product URL is available, it fetches detailed info from that page before answering.
+        For each follow-up question, it first uses OpenAI to decide if clicking on the product in the search results
+        will yield a better answer. If yes and the product element is available, it clicks that element to extract
+        detailed info before answering.
         """
+        print("\n--- Entering Follow-Up Conversation ---")
         while True:
-            followup = input("\nEnter your follow-up question (or type 'exit' to finish): ")
-            if followup.lower().strip() == "exit":
+            followup = input("\nEnter your follow-up question (or type 'exit' to finish): ").strip()
+            if followup.lower() == "exit":
+                print("\nThank you for using the Amazon Shopping Assistant. Goodbye!")
                 break
 
             # Check if the user is asking for details about a specific option.
@@ -392,19 +412,24 @@ class AmazonShoppingAssistant:
 
             if option_number is not None:
                 product = products[option_number - 1]
-                # Ask OpenAI if browsing to the product page would yield a better answer.
+                # Ask OpenAI if clicking on the product would yield a better answer.
                 need_browse = self.should_browse_question(followup, product)
-                if need_browse and product.get("url"):
-                    details = self.fetch_product_page_details(product.get("url"))
+                if need_browse and product.get("element"):
+                    details = self.fetch_product_page_details_by_click(product["element"])
                     answer = self.answer_question_with_details(followup, product, details)
-                    print("\nAnswer:", answer)
+                    print("\n=== Answer ===")
+                    print(answer)
+                    print("=" * 40)
                 else:
                     answer = self.answer_followup_question(followup, products)
-                    print("\nAnswer:", answer)
+                    print("\n=== Answer ===")
+                    print(answer)
+                    print("=" * 40)
             else:
-                # General follow-up question (not referring to a specific option).
                 answer = self.answer_followup_question(followup, products)
-                print("\nAnswer:", answer)
+                print("\n=== Answer ===")
+                print(answer)
+                print("=" * 40)
 
     def run(self, query):
         """
@@ -433,21 +458,24 @@ class AmazonShoppingAssistant:
 
 if __name__ == "__main__":
     # Ask the user what they want to buy.
-    user_query = input("What are you looking to buy? ")
+    user_query = input("What are you looking to buy? ").strip()
 
     assistant = AmazonShoppingAssistant()
     try:
         results = assistant.run(user_query)
-        logging.info("Top 3 product options based on your query and priorities:")
+        print("\n" + "=" * 40)
+        print("Top 3 Product Options:")
+        print("=" * 40)
         for idx, product in enumerate(results, start=1):
-            logging.info("Option %d: %s | Price: %s | Rating: %s | Reviews: %s | Prime: %s",
-                         idx,
-                         product.get("title"),
-                         product.get("price"),
-                         product.get("rating"),
-                         product.get("reviews"),
-                         product.get("prime"))
+            print(f"Option {idx}:")
+            print(f"  Title   : {product.get('title')}")
+            print(f"  Price   : {product.get('price')}")
+            print(f"  Rating  : {product.get('rating')}")
+            print(f"  Reviews : {product.get('reviews')}")
+            print(f"  Prime   : {product.get('prime')}")
+            print("-" * 40)
         print("\nThe top 3 product options are displayed above.")
+
         # Enter the follow-up conversation loop.
         assistant.conversation_loop(results)
     except Exception as e:
