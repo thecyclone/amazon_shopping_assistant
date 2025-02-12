@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Amazon Shopping Assistant - Chat</title>
+    <style>
+      .container { display: flex; }
+      .chat { width: 70%; padding: 10px; }
+      .log { width: 30%; padding: 10px; background-color: #f0f0f0; overflow-y: scroll; height: 600px; }
+      .message { margin-bottom: 10px; }
+      .user { font-weight: bold; color: blue; }
+      .agent { font-weight: bold; color: green; }
+      .product { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Amazon Shopping Assistant - Chat</h1>
+    <div class="container">
+      <div class="chat">
+        <h2>Top Product Options</h2>
+        {% for product in top_products %}
+          <div class="product">
+            <h3>Option {{ loop.index }}: {{ product.title }}</h3>
+            <p>
+              Price: {{ product.price }}<br>
+              Rating: {{ product.rating }}<br>
+              Reviews: {{ product.reviews }}<br>
+              Prime: {{ product.prime }}<br>
+              Product URL: 
+              {% if product.product_url %}
+                <a href="{{ product.product_url }}" target="_blank">{{ product.product_url }}</a>
+              {% else %}
+                N/A
+              {% endif %}
+            </p>
+          </div>
+        {% endfor %}
+        <h2>Chat</h2>
+        <div id="chat-box">
+          {% for msg in conversation_history %}
+            <div class="message">
+              <span class="{{ msg.sender|lower }}">{{ msg.sender }}:</span> {{ msg.message }}
+            </div>
+          {% endfor %}
+        </div>
+        <form method="POST" action="/chat">
+          <input type="text" name="message" style="width:400px;" required>
+          <button type="submit">Send</button>
+        </form>
+        <p><a href="{{ url_for('summary') }}">View Token Usage Summary</a></p>
+      </div>
+      <div class="log">
+        <h2>Logs</h2>
+        <pre>{{ logs }}</pre>
+      </div>
+    </div>
+</body>
+</html>

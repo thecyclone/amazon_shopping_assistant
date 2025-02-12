@@ -15,12 +15,12 @@ pip install -r requirements.txt
 
 #### Option 1: Export the OpenAI key
 ```
-export OPENAI_API_KEY_PROBOOK="yourkey"
+export OPENAI_API_KEY_AA="yourkey"
 ```
 
 #### Option 2: Environment Variable using zsh
 ```
-echo "export OPENAI_API_KEY_PROBOOK='yourkey'" >> ~/.zshrc
+echo "export OPENAI_API_KEY_AA='yourkey'" >> ~/.zshrc
 ```
 
 ### 4. Running the agent
