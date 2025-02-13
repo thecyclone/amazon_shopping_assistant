@@ -4,8 +4,7 @@
     <title>Amazon Shopping Assistant - Chat</title>
     <style>
       .container { display: flex; }
-      .chat { width: 70%; padding: 10px; }
-      .log { width: 30%; padding: 10px; background-color: #f0f0f0; overflow-y: scroll; height: 600px; }
+      .chat { width: 100%; padding: 10px; }
       .message { margin-bottom: 10px; }
       .user { font-weight: bold; color: blue; }
       .agent { font-weight: bold; color: green; }
@@ -27,7 +26,7 @@
               Prime: {{ product.prime }}<br>
               Product URL: 
               {% if product.product_url %}
-                <a href="{{ product.product_url }}" target="_blank">{{ product.product_url }}</a>
+                <a href="{{ product.product_url }}" target="_blank">View Product</a>
               {% else %}
                 N/A
               {% endif %}
@@ -47,10 +46,6 @@
           <button type="submit">Send</button>
         </form>
         <p><a href="{{ url_for('summary') }}">View Token Usage Summary</a></p>
-      </div>
-      <div class="log">
-        <h2>Logs</h2>
-        <pre>{{ logs }}</pre>
       </div>
     </div>
 </body>

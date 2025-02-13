@@ -1,3 +1,6 @@
+# Amazon Shopping Agent
+Takes a user input and preference and searches for the product on Amazon. Uses caching and a ranking algorithm to display the top 3 products based on the user's preferences, and then answers follow-up questions by referencing cached product details and search context.
+
 ## Project setup
 
 ### 1. Make a virtual environment
@@ -25,10 +28,15 @@ echo "export OPENAI_API_KEY_AA='yourkey'" >> ~/.zshrc
 
 ### 4. Running the agent
 ```
-python3 main.py
+python3 amazon_assistant/app.py
 ```
 
-### 5. Recovering from Selenium errors
+### 5. Using the agent
+```
+go to http://127.0.0.1:5001/
+```
+
+### 6. Recovering from Selenium errors
 
 In case you encounter a Selenium error, example:
 ```

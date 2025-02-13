@@ -2,48 +2,22 @@ import time
 import logging
 import json
 import math
-import os
-import requests
+import tiktoken
 import openai
 import tiktoken
 
-from flask import Flask, render_template, request, redirect, url_for, Markup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from assistant.utils import num_tokens_from_messages
 
-# ----------------- Logging Setup -----------------
 logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    filename="app.log",
-                    filemode="w")
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ----------------- OpenAI Setup -----------------
-openai.api_key = os.getenv("OPENAI_API_KEY_AA")
-openai_client = openai.Client(api_key=openai.api_key)
-
-def num_tokens_from_messages(messages, model="gpt-4o"):
-    """
-    Returns the number of tokens used by a list of messages.
-    Adapted from OpenAI guidelines.
-    """
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except Exception:
-        encoding = tiktoken.get_encoding("cl100k_base")
-    total_tokens = 0
-    for message in messages:
-        total_tokens += 4  # each message overhead
-        for key, value in message.items():
-            total_tokens += len(encoding.encode(value))
-        total_tokens += 2
-    return total_tokens
-
-# ----------------- Assistant Class -----------------
 class AmazonShoppingAssistant:
     def __init__(self):
         self.driver = self.setup_driver()
-        self.top_products_cache = {}  # in-memory cache for product page HTML (if needed)
+        self.top_products_cache = {}  # cache keyed by product index (as string)
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
@@ -70,7 +44,7 @@ class AmazonShoppingAssistant:
         input_tokens = num_tokens_from_messages(messages, model)
         self.total_input_tokens += input_tokens
 
-        response = openai_client.chat.completions.create(**kwargs)
+        response = openai.Client(api_key=openai.api_key).chat.completions.create(**kwargs)
         output_text = response.choices[0].message.content
         output_tokens = len(encoding.encode(output_text))
         self.total_output_tokens += output_tokens
@@ -169,9 +143,6 @@ class AmazonShoppingAssistant:
             logging.error("Error caching search page HTML: %s", e)
 
     def get_product_elements(self):
-        """
-        Re-finds and returns the list of product elements on the current search page.
-        """
         try:
             elements = self.driver.find_elements(By.XPATH, "//div[contains(@data-cel-widget, 'search_result')]")
             return elements
@@ -181,15 +152,18 @@ class AmazonShoppingAssistant:
 
     def extract_product_url_from_element(self, element):
         """
-        Tries to extract the product URL from the search result element by locating an anchor tag.
-        Adjust the XPath as needed based on the current Amazon DOM.
+        Attempts to extract the product URL from the search result element.
+        This function looks for anchor tags and returns the first href that contains 'amazon.com'
+        and ensures it uses 'www.amazon.com' (replacing unwanted subdomains).
         """
         try:
-            # Try finding any anchor tag with an href that contains "amazon.com"
             anchors = element.find_elements(By.TAG_NAME, "a")
             for a in anchors:
                 href = a.get_attribute("href")
                 if href and "amazon.com" in href:
+                    # Replace unwanted subdomain if present.
+                    if "aax-us-iad.amazon.com" in href or "amazon.com/x/" in href:
+                        return None
                     return href
             return None
         except Exception as e:
@@ -204,14 +178,18 @@ class AmazonShoppingAssistant:
         except Exception as e:
             logging.error("Error finding product elements: %s", e)
             return products
-        for idx, elem in enumerate(elements[:10], start=1):
+        for idx, elem in enumerate(elements, start=1):
             html = elem.get_attribute("outerHTML")
             product_details = self.parse_product_details_with_openai(html)
-            product_details["index"] = idx
-            # Instead of clicking, extract URL from the element.
+            product_details["index"] = idx  # store index for reference
             product_url = self.extract_product_url_from_element(elem)
+            # If the URL is None, skip this product
+            if product_url is None:
+                continue
             product_details["product_url"] = product_url
             products.append(product_details)
+            if len(products) >= 3:
+                break
         return products
 
     def get_user_priority_weights(self, priorities_str):
@@ -255,7 +233,7 @@ class AmazonShoppingAssistant:
 
     def fetch_product_page_html_by_click(self, index):
         """
-        Re-finds the product element by index, clicks it to load its page,
+        Re-finds the product element by its index, clicks it to load its page,
         retrieves the page HTML, then navigates back.
         """
         try:
@@ -438,72 +416,3 @@ class AmazonShoppingAssistant:
 
     def shutdown(self):
         self.driver.quit()
-
-# ----------------- Flask Web App -----------------
-app = Flask(__name__)
-app.secret_key = "a_secret_key_for_session"
-
-# Global state
-assistant = AmazonShoppingAssistant()
-TOP_PRODUCTS = None
-CONVERSATION_HISTORY = []  # List of dicts: {"sender": ..., "message": ...}
-
-def get_logs():
-    try:
-        with open("app.log", "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return "No logs available."
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    global TOP_PRODUCTS, CONVERSATION_HISTORY
-    if request.method == "POST":
-        query = request.form.get("query")
-        # Read checkbox values for priorities.
-        pref_rating = request.form.get("pref_rating")
-        pref_reviews = request.form.get("pref_reviews")
-        pref_price = request.form.get("pref_price")
-        if not (pref_rating or pref_reviews or pref_price):
-            priorities = ""
-        else:
-            base_rating = 1.0 if pref_rating else 0.5
-            base_reviews = 1.0 if pref_reviews else 0.5
-            base_price = 1.0 if pref_price else 0.5
-            total = base_rating + base_reviews + base_price
-            weights = {
-                "rating": base_rating / total,
-                "reviews": base_reviews / total,
-                "price": base_price / total
-            }
-            priorities = json.dumps(weights)
-        top_products = assistant.run(query, priorities)
-        TOP_PRODUCTS = top_products
-        CONVERSATION_HISTORY = []  # reset conversation history
-        return redirect(url_for("chat"))
-    return render_template("index.html")
-
-@app.route("/chat", methods=["GET", "POST"])
-def chat():
-    global CONVERSATION_HISTORY, TOP_PRODUCTS
-    if request.method == "POST":
-        message = request.form.get("message")
-        CONVERSATION_HISTORY.append({"sender": "User", "message": message})
-        answer = assistant.process_followup(message, TOP_PRODUCTS)
-        CONVERSATION_HISTORY.append({"sender": "Agent", "message": answer})
-        return redirect(url_for("chat"))
-    return render_template("chat.html", top_products=TOP_PRODUCTS, conversation_history=CONVERSATION_HISTORY, logs=Markup(get_logs()))
-
-@app.route("/summary")
-def summary():
-    total_input = assistant.total_input_tokens
-    total_output = assistant.total_output_tokens
-    cost_input = (total_input / 1_000_000) * 2.5
-    cost_output = (total_output / 1_000_000) * 10
-    total_cost = cost_input + cost_output
-    return f"<h2>Token Usage Summary</h2><p>Total Input Tokens: {total_input}</p><p>Total Output Tokens: {total_output}</p><p>Estimated Cost: ${total_cost:.4f}</p>"
-
-if __name__ == "__main__":
-    port = 5001
-    print(f"Starting the Flask app on port {port}...")
-    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
