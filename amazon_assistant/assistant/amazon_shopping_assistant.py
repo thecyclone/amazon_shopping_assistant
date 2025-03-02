@@ -51,7 +51,7 @@ class AmazonShoppingAssistant:
         return response
 
     def parse_query(self, query):
-        return {"item": query, "max_price": None, "min_rating": None, "prime": False}
+        return {"item": query, "max_price": None, "min_rating": None, "prime": False, "avoid_sponsored": True}
 
     def parse_query_with_openai(self, query):
         prompt = (
@@ -60,7 +60,8 @@ class AmazonShoppingAssistant:
             "2. max_price: the maximum price (number) if specified, else null.\n"
             "3. min_rating: the minimum rating (number) if indicated (e.g., if the query says 'good reviews', assume 4.0), else null.\n"
             "4. prime: true if Prime shipping is required, false otherwise.\n"
-            "Return the result as a valid JSON object with keys 'item', 'max_price', 'min_rating', and 'prime'.\n"
+            "5. avoid_sponsored: true by default, set to false only if the user explicitly wants to include sponsored products.\n"
+            "Return the result as a valid JSON object with keys 'item', 'max_price', 'min_rating', 'prime', and 'avoid_sponsored'.\n"
             f"User query: {query}"
         )
         try:
@@ -76,6 +77,9 @@ class AmazonShoppingAssistant:
             )
             answer = response.choices[0].message.content.strip()
             filters = json.loads(answer)
+            # Ensure avoid_sponsored is set to True by default if not present
+            if "avoid_sponsored" not in filters:
+                filters["avoid_sponsored"] = True
             logging.info("Parsed filters: %s", filters)
             return filters
         except Exception as e:
@@ -91,7 +95,8 @@ class AmazonShoppingAssistant:
             "4. reviews: number of reviews (integer) if available, else null.\n"
             "5. prime: true if product has Prime shipping, false otherwise.\n"
             "6. url: product URL (string) if available, else null.\n"
-            "Return a JSON object with keys 'title', 'price', 'rating', 'reviews', 'prime', and 'url'.\n"
+            "7. sponsored: true if the product is marked as 'Sponsored', 'Ad', or similar advertising indicators, false otherwise.\n"
+            "Return a JSON object with keys 'title', 'price', 'rating', 'reviews', 'prime', 'url', and 'sponsored'.\n"
             f"HTML snippet: {html}"
         )
         try:
@@ -110,7 +115,7 @@ class AmazonShoppingAssistant:
             return product_details
         except Exception as e:
             logging.error("Error in parse_product_details_with_openai: %s", e)
-            return {"title": "No title", "price": None, "rating": None, "reviews": None, "prime": False, "url": None}
+            return {"title": "No title", "price": None, "rating": None, "reviews": None, "prime": False, "url": None, "sponsored": False}
 
     def perform_search(self, filters):
         amazon_url = "https://www.amazon.com/"
@@ -178,6 +183,10 @@ class AmazonShoppingAssistant:
         except Exception as e:
             logging.error("Error finding product elements: %s", e)
             return products
+        
+        # Extract more products (at least 20) to have a better selection pool
+        max_products_to_extract = 20
+        
         for idx, elem in enumerate(elements, start=1):
             html = elem.get_attribute("outerHTML")
             product_details = self.parse_product_details_with_openai(html)
@@ -186,9 +195,13 @@ class AmazonShoppingAssistant:
             # If the URL is None, skip this product
             if product_url is None:
                 continue
+            # Skip sponsored products
+            if product_details.get("sponsored", False):
+                logging.info(f"Skipping sponsored product: {product_details.get('title', 'Unknown')}")
+                continue
             product_details["product_url"] = product_url
             products.append(product_details)
-            if len(products) >= 3:
+            if len(products) >= max_products_to_extract:
                 break
         return products
 
@@ -205,18 +218,45 @@ class AmazonShoppingAssistant:
                 return "default", None
 
     def score_product(self, product, weights=None):
+        """
+        Score a product based on its attributes and user-defined weights.
+        Uses a more balanced approach to handle review count discrepancies.
+        """
         rating = product.get("rating") or 0
         reviews = product.get("reviews") or 0
         price = product.get("price") if product.get("price") and product.get("price") > 0 else 1
+        
+        # Use logarithmic scaling for reviews to reduce the impact of massive review count differences
+        # This gives diminishing returns for very high review counts
+        log_reviews = math.log(reviews + 1)
+        
         if weights is None:
-            score = rating * math.log(reviews + 1) / price
+            # Default scoring formula with balanced review impact
+            score = (rating * 0.6) + (log_reviews * 0.3) - (math.log(price) * 0.1)
         else:
-            score = (weights.get("rating", 0) * rating) + (weights.get("reviews", 0) * math.log(reviews + 1)) - (weights.get("price", 0) * price)
+            # Custom weights with balanced review impact
+            rating_weight = weights.get("rating", 0.5)
+            reviews_weight = weights.get("reviews", 0.3)
+            price_weight = weights.get("price", 0.2)
+            
+            # Normalize weights to sum to 1
+            total_weight = rating_weight + reviews_weight + price_weight
+            if total_weight > 0:
+                rating_weight /= total_weight
+                reviews_weight /= total_weight
+                price_weight /= total_weight
+            
+            score = (rating_weight * rating) + (reviews_weight * log_reviews) - (price_weight * math.log(price))
+        
         return score
 
     def decide_products(self, products, filters, weights=None):
         filtered_products = []
         for product in products:
+            # Skip products with missing critical data
+            if product.get("price") is None or product.get("rating") is None or product.get("reviews") is None:
+                continue
+            # Apply user filters
             if filters.get("max_price") and product.get("price"):
                 if product["price"] > filters["max_price"]:
                     continue
@@ -225,10 +265,26 @@ class AmazonShoppingAssistant:
                     continue
             if filters.get("prime") and not product.get("prime"):
                 continue
+            # Skip sponsored products (double-check)
+            if product.get("sponsored", False):
+                continue
             filtered_products.append(product)
-        scored_products = [(self.score_product(p, weights), p) for p in filtered_products]
-        scored_products.sort(key=lambda x: x[0], reverse=True)
-        top_products = [p for score, p in scored_products[:3]]
+        
+        # Handle review count discrepancies
+        if len(filtered_products) > 3:
+            # First, select top products by review count
+            filtered_products.sort(key=lambda p: p.get("reviews", 0) or 0, reverse=True)
+            # Take top 10 products with most reviews (or all if less than 10)
+            top_review_products = filtered_products[:min(10, len(filtered_products))]
+            
+            # Now score these products using weights
+            scored_products = [(self.score_product(p, weights), p) for p in top_review_products]
+            scored_products.sort(key=lambda x: x[0], reverse=True)
+            top_products = [p for score, p in scored_products[:3]]
+        else:
+            # If we have 3 or fewer products, just use them all
+            top_products = filtered_products
+        
         return top_products
 
     def fetch_product_page_html_by_click(self, index):
@@ -386,19 +442,29 @@ class AmazonShoppingAssistant:
         Runs the full assistant process:
           1. Parse query.
           2. Perform search.
-          3. Extract products.
+          3. Extract products (now extracts up to 20 products, filtering out sponsored ones).
           4. Determine priority weights from the provided string.
-          5. Decide top 3 products.
+          5. Decide top 3 products (now selects top 10 by review count first, then applies weights).
           6. Cache top product pages.
         Returns the top 3 products.
         """
         filters = self.parse_query_with_openai(query)
         self.perform_search(filters)
         products = self.extract_products()
+        
+        # Log the number of products found after filtering out sponsored ones
+        logging.info(f"Found {len(products)} non-sponsored products")
+        
         type_, weights = self.get_user_priority_weights(priorities)
         if type_ == "default":
             weights = None
+        
         top_products = self.decide_products(products, filters, weights)
+        
+        # Log the selected top products
+        for idx, product in enumerate(top_products, start=1):
+            logging.info(f"Top product {idx}: {product.get('title')} - Price: {product.get('price')} - Rating: {product.get('rating')} - Reviews: {product.get('reviews')}")
+        
         # Cache top 3 product pages (HTML) for later reference.
         top_products_cache = {}
         for product in top_products:
